@@ -5,11 +5,11 @@
 #include <ctype.h>
 
 #include "player.h"
+#include "game.h"
 #include "http.h"
 #include "config.h"
 #include "rbtree.h"
 #include "utils.h"
-
 
 static int player_cmp(const void *p1, const void *p2) {
   Player *player1, *player2;
@@ -33,6 +33,8 @@ static void *player_dup(void *p) {
 
 static void player_rel(void *p) { free(p); }
 
+void player_drop(PlayerTree *playertree) { rbdelete(playertree); }
+
 int player_add(PlayerTree *playertree, Player new_player) {
   int ret;
 
@@ -44,12 +46,14 @@ int player_add(PlayerTree *playertree, Player new_player) {
   strcpy(player->password, new_player.password);
   strcpy(player->avatar, new_player.avatar);
   player->game = new_player.game;
-  player->sock = 0;
+  player->sock = new_player.sock;
   player->achievement = new_player.achievement;
+  memcpy(player->friends, new_player.friends, FRIEND_L);
+  player->is_online = new_player.is_online;
+  player->is_playing = new_player.is_playing;
 
   ret = rbinsert(playertree, (void *)player);
   if (ret == 0) {
-    logger(L_ERROR, "Can't insert new player for players");
     free(player);
     return -1;
   }
@@ -62,38 +66,66 @@ PlayerTree *player_build(MYSQL *conn) {
   rbtree = rbnew(player_cmp, player_dup, player_rel);
 
   // TODO: Read players data from database
-  char query[QUERY_L] = "SELECT * FROM players";
+  char query_player[QUERY_L] = "SELECT * FROM players";
+  char query_friend[QUERY_L];
 
-  if (mysql_query(conn, query)) {
-    logger(L_ERROR, mysql_error(conn));
+  if (mysql_query(conn, query_player)) {
+    logger(L_INFO, "Build playertree failed...");
     return NULL;
   }
 
-  MYSQL_RES *qres = mysql_store_result(conn);
-  if(!qres->row_count) {
-    mysql_free_result(qres);
+  MYSQL_RES *res_player = mysql_store_result(conn);
+  if(!res_player->row_count) {
+    mysql_free_result(res_player);
+    logger(L_INFO, "Build playertree failed...");
     return NULL;
   }
 
-  MYSQL_ROW row;
+  MYSQL_RES *res_friend;
+  MYSQL_ROW row_player, row_friend;
   Player player;
+  int j = 0;
 
-  while ((row = mysql_fetch_row(qres))) {
-    player.id = atoi(row[0]);
-    strcpy(player.username, row[1]);
-    strcpy(player.password, row[2]);
-    strcpy(player.avatar, row[3]);
-    player.game = atoi(row[4]);
-    player.achievement.win = atoi(row[5]);
-    player.achievement.loss = atoi(row[6]);
-    player.achievement.draw = atoi(row[7]);
-    player.achievement.streak = atoi(row[8]);
-    player.achievement.points = atoi(row[9]);
+  while ((row_player = mysql_fetch_row(res_player))) {
+    j = 0;
+    player.id = atoi(row_player[0]);
+    strcpy(player.username, row_player[1]);
+    strcpy(player.password, row_player[2]);
+    strcpy(player.avatar, row_player[3]);
+    player.game = atoi(row_player[4]);
+    player.achievement.win = atoi(row_player[5]);
+    player.achievement.loss = atoi(row_player[6]);
+    player.achievement.draw = atoi(row_player[7]);
+    player.achievement.streak = atoi(row_player[8]);
+    player.achievement.points = atoi(row_player[9]);
     player.sock = 0;
+    player.is_playing = false;
+    player.is_online = false;
+
+    memset(query_friend, '\0', QUERY_L);
+    sprintf(
+      query_friend,
+      "SELECT IF(friends.player_id = %d, friends.friend_id, friends.player_id) AS friend_id "
+      "FROM players, friends "
+      "WHERE players.id IN (friends.player_id, friends.friend_id) AND confirmed = 1 AND players.id = %d",
+      player.id, player.id
+    );
+
+    mysql_query(conn, query_friend);
+    res_friend = mysql_store_result(conn);
+
+    if(res_friend->row_count) {
+      while ((row_friend = mysql_fetch_row(res_friend))) {
+        player.friends[j] = atoi(row_friend[0]);
+        j++;
+      }
+    }
+
     player_add(rbtree, player);
   }
 
-  mysql_free_result(qres);
+  mysql_free_result(res_player);
+  mysql_free_result(res_friend);
   logger(L_SUCCESS, "Build playertree successfully...");
   return rbtree;
 }
@@ -103,31 +135,8 @@ Player *player_find(PlayerTree *playertree, int player_id) {
 
   player_find.id = player_id;
   player = rbfind(playertree, &player_find);
-  if (!player) {
-    return NULL;
-  }
-  return player;
-}
 
-void player_print(Player *player) {
-  printf(
-    "id %d - username: %s - password: %s - avatar: %s - game: %d - win: %d - draw: %d - loss: %d - streak: %d - points: %d\n",
-    player->id, player->username, player->password, player->avatar, player->game,
-    player->achievement.win, player->achievement.draw, player->achievement.loss, player->achievement.streak, player->achievement.points
-    );
-}
-
-void player_info(PlayerTree *playertree) {
-  Player *player;
-
-  rbtrav_t *rbtrav;
-  rbtrav = rbtnew();
-  player = rbtfirst(rbtrav, playertree);
-  player_print(player);
-
-  while ((player = rbtnext(rbtrav)) != NULL) {
-    player_print(player);
-  }
+  return !player ? NULL : player;
 }
 
 int player_fd(PlayerTree *playertree, int player_id) {
@@ -148,8 +157,6 @@ int my_rank(MYSQL *conn, int player_id, char *dataStr) {
     "order by points desc";
 
   if (mysql_query(conn, query)) {
-    logger(L_ERROR, "Query to database failed");
-    logger(L_ERROR, mysql_error(conn));
     return -1;
   }
 
@@ -167,7 +174,7 @@ int my_rank(MYSQL *conn, int player_id, char *dataStr) {
 
   while ((row = mysql_fetch_row(qres))) {
     if(strcmp(row[0], idStr) == 0) {
-      sprintf(line, "username=%s&avatar=%s&game=%d&win=%d&draw=%d&loss=%d&points=%d", row[1], row[2], atoi(row[3]), atoi(row[4]), atoi(row[5]), atoi(row[6]), atoi(row[7]));
+      sprintf(line, "username=%s,avatar=%s,game=%d,win=%d,draw=%d,loss=%d,points=%d", row[1], row[2], atoi(row[3]), atoi(row[4]), atoi(row[5]), atoi(row[6]), atoi(row[7]));
       strcat(dataStr, line);
       mysql_free_result(qres);
       return atoi(row[8]);
@@ -178,28 +185,22 @@ int my_rank(MYSQL *conn, int player_id, char *dataStr) {
   return -1;
 }
 
-void rank(MYSQL *conn, Request *req, Response *res) {
-  int player_id;
-
-  // TODO: Get player id from request
-  if(sscanf(req->header.params, "player_id=%d", &player_id) <= 0) {
-    responsify(res, 400, NULL, NULL, "Bad request. Usage: GET /rank player_id=...", SEND_ME);
-    return;
-  }
+int rank(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+  int player_id = atoi(map_val(msg->params, "player_id"));
 
   // TODO: QUERY follow points from database
-  char query[QUERY_L] = "SELECT username, avatar, game, win, draw, loss, points FROM players ORDER BY points DESC LIMIT 10";
+  char query[QUERY_L] = "SELECT id, username, avatar, win, loss, points FROM players ORDER BY points DESC LIMIT 10";
 
   if (mysql_query(conn, query)) {
-    logger(L_ERROR, "Query to database failed");
-    logger(L_ERROR, mysql_error(conn));
-    return;
+    server_error(msg);
+    return FAILURE;
   }
 
   MYSQL_RES *qres = mysql_store_result(conn);
   if(!qres->row_count) {
     mysql_free_result(qres);
-    return;
+    server_error(msg);
+    return FAILURE;
   }
 
   // TODO: Count number of records in db
@@ -210,19 +211,18 @@ void rank(MYSQL *conn, Request *req, Response *res) {
   memset(dataStr, '\0', sizeof dataStr);
 
   while ((row = mysql_fetch_row(qres))) {
-    strcpy(player[i].username, row[0]);
-    strcpy(player[i].avatar, row[1]);
-    player[i].game = atoi(row[2]);
+    player[i].id = atoi(row[0]);
+    strcpy(player[i].username, row[1]);
+    strcpy(player[i].avatar, row[2]);
     player[i].achievement.win = atoi(row[3]);
-    player[i].achievement.draw = atoi(row[4]);
-    player[i].achievement.loss = atoi(row[5]);
-    player[i].achievement.points = atoi(row[6]);
+    player[i].achievement.loss = atoi(row[4]);
+    player[i].achievement.points = atoi(row[5]);
     char line[1000];
     sprintf(
       line,
-      "username=%s&avatar=%s&game=%d&win=%d&draw=%d&loss=%d&points=%d;",
-      player[i].username, player[i].avatar, player[i].game, player[i].achievement.win,
-      player[i].achievement.draw, player[i].achievement.loss, player[i].achievement.points
+      "id=%d,username=%s,avatar=%s,win=%d,loss=%d,points=%d;",
+      player[i].id, player[i].username, player[i].avatar, player[i].achievement.win,
+      player[i].achievement.loss, player[i].achievement.points
     );
     strcat(dataStr, line);
     i++;
@@ -230,20 +230,15 @@ void rank(MYSQL *conn, Request *req, Response *res) {
 
   mysql_free_result(qres);
   my_rank(conn, player_id, dataStr);
-  responsify(res, 200, NULL, dataStr, "Get rank successfully", SEND_ME);
+  responsify(msg, "rank", dataStr);
+  return SUCCESS;
 }
 
-void profile(MYSQL *conn, Request *req, Response *res) {
+int profile(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
   char key[USERNAME_L];
-  char msgStr[MESSAGE_L], dataStr[DATA_L], tmp[DATA_L];
-  memset(msgStr, '\0', MESSAGE_L);
+  char dataStr[DATA_L], tmp[DATA_L];
   memset(dataStr, '\0', DATA_L);
-
-  // TODO: Get key from request
-  if(sscanf(req->header.params, "key=%s", key) <= 0) {
-    responsify(res, 400, NULL, NULL, "Bad request. Usage: GET /profile key=[player_id | username]", SEND_ME);
-    return;
-  }
+  strcpy(key, map_val(msg->params, "key"));
 
   // TODO:
   int i, key_l = strlen(key), type = 0;
@@ -268,34 +263,160 @@ void profile(MYSQL *conn, Request *req, Response *res) {
     case 1:
       sprintf(query, "SELECT id, username, avatar, game, win, draw, loss, points FROM players WHERE username = '%s'", key);
       break;
-
-    default: break;
   }
 
   if (mysql_query(conn, query)) {
-    logger(L_ERROR, "Query to database failed");
-    logger(L_ERROR, mysql_error(conn));
-    return;
+    server_error(msg);
+    return FAILURE;
   }
 
   MYSQL_RES *qres = mysql_store_result(conn);
   if(!qres->row_count) {
-    sprintf(msgStr, "Player [%s] does not exist", key);
-    responsify(res, 400, NULL, NULL, msgStr, SEND_ME);
+    responsify(msg, "player_null", NULL);
     mysql_free_result(qres);
-    return;
+    return FAILURE;
   }
 
   MYSQL_ROW row;
   while ((row = mysql_fetch_row(qres))) {
     sprintf(
       dataStr,
-      "username=%s&avatar=%s&game=%d&win=%d&draw=%d&loss=%d&streak=%d&points=%d&rank=%d",
+      "username=%s,avatar=%s,game=%d,win=%d,draw=%d,loss=%d,streak=%d,points=%d,rank=%d",
       row[1], row[2], atoi(row[3]), atoi(row[4]), atoi(row[5]), atoi(row[6]), atoi(row[7]), atoi(row[8]), my_rank(conn, type ? atoi(row[0]) : atoi(key), tmp)
     );
   }
 
   mysql_free_result(qres);
-  sprintf(msgStr, "Get info of player [%s] successfully", key);
-  responsify(res, 200, NULL, dataStr, msgStr, SEND_ME);
+  responsify(msg, "profile", dataStr);
+  return SUCCESS;
+}
+
+int friend_check(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+  int player_id = atoi(map_val(msg->params, "player_id"));
+  int friend_id = atoi(map_val(msg->params, "friend_id"));
+
+  // TODO: QUERY check friend in database
+  char query[QUERY_L];
+  memset(query, '\0', QUERY_L);
+  sprintf(query, "SELECT * FROM friends WHERE player_id = %d AND friend_id = %d AND confirmed = 1", player_id, friend_id);
+
+  if (mysql_query(conn, query)) {
+    responsify(msg, "friend_check", "is_friend=0");
+    return SUCCESS;
+  }
+
+  MYSQL_RES *qres = mysql_store_result(conn);
+  if(!qres->row_count) {
+    mysql_free_result(qres);
+    responsify(msg, "friend_check", "is_friend=0");
+    return SUCCESS;
+  }
+
+  mysql_free_result(qres);
+  responsify(msg, "friend_check", "is_friend=1");
+  return SUCCESS;
+}
+
+int friend_list(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+  int player_id = atoi(map_val(msg->params, "player_id"));
+
+  // TODO: QUERY check friend in database
+  char query[QUERY_L];
+  memset(query, '\0', QUERY_L);
+
+  sprintf(
+    query,
+    "SELECT players.id, players.username, players.avatar "
+    "FROM "
+      "players, "
+      "(SELECT "
+        "IF(friends.player_id = %d, friends.friend_id, friends.player_id) AS friend_id "
+        "FROM players, friends "
+        "WHERE players.id IN (friends.player_id, friends.friend_id) AND confirmed = 1 AND players.id = %d"
+      ") AS friend_ids "
+      "WHERE players.id = friend_ids.friend_id",
+    player_id, player_id
+  );
+
+  if (mysql_query(conn, query)) {
+    server_error(msg);
+    return FAILURE;
+  }
+
+  MYSQL_RES *qres = mysql_store_result(conn);
+  if(!qres->row_count) {
+    mysql_free_result(qres);
+    responsify(msg, "friend_list_null", NULL);
+    return SUCCESS;
+  }
+
+  MYSQL_ROW row;
+  char line[100], dataStr[DATA_L];
+  memset(line, '\0', 100);
+  memset(dataStr, '\0', DATA_L);
+  Player *friend;
+
+  while ((row = mysql_fetch_row(qres))) {
+    friend = player_find(playertree, atoi(row[0]));
+    sprintf(
+      line,
+      "id=%d,username=%s,avatar=%s,is_online=%s,is_playing=%s;",
+      atoi(row[0]), row[1], row[2], friend->is_online ? "true" : "false", friend->is_playing ? "true" : "false"
+    );
+    strcat(dataStr, line);
+  }
+  dataStr[strlen(dataStr) - 1] = '\0';
+
+  mysql_free_result(qres);
+  responsify(msg, "friend_list", dataStr);
+  return SUCCESS;
+}
+
+int friend_accept(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+  int player_id = atoi(map_val(msg->params, "player_id"));
+  int friend_id = atoi(map_val(msg->params, "friend_id"));
+
+  // TODO: Update confirmed column in friends table
+  char query[QUERY_L];
+  memset(query, '\0', QUERY_L);
+  sprintf(query, "UPDATE friends SET confirmed = 1 WHERE friend_id = %d AND player_id = %d", player_id, friend_id);
+
+  if (mysql_query(conn, query)) {
+    responsify(msg, NULL, NULL);
+    return FAILURE;
+  }
+
+  Player *me = player_find(playertree, player_id);
+  Player *friend = player_find(playertree, friend_id);
+  int i = 0;
+  for(i = 0; i < FRIEND_L; i++)
+    if(me->friends[i] == 0) me->friends[i] = friend_id;
+  for(i = 0; i < FRIEND_L; i++)
+    if(friend->friends[i] == 0) friend->friends[i] = player_id;
+
+  responsify(msg, NULL, NULL);
+  return SUCCESS;
+}
+
+int friend_add(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+  int player_id = atoi(map_val(msg->params, "player_id"));
+  int friend_id = atoi(map_val(msg->params, "friend_id"));
+
+  // TODO: Insert new add friend request with confirmed = 0 to friends table
+  char query[QUERY_L];
+  memset(query, '\0', QUERY_L);
+  sprintf(query, "INSERT INTO friends (player_id, friend_id, confirmed) VALUES (%d, %d, 0)", player_id, friend_id);
+
+  if (mysql_query(conn, query)) {
+    responsify(msg, NULL, NULL);
+    return FAILURE;
+  }
+
+  Player *friend = player_find(playertree, friend_id);
+  char dataStr[DATA_L];
+  memset(dataStr, '\0', DATA_L);
+  sprintf(dataStr, "player_id=%d,username=%s", player_id, player_username(playertree, player_id));
+  receiver[0] = friend->sock;
+  responsify(msg, "friend_request", dataStr);
+  return SUCCESS;
 }

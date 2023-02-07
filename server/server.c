@@ -15,10 +15,11 @@
 
 /* Global variable */
 int server_fd;
-Request req;
-Response res;
-int receiver[MAX_SPECTATOR + 2];
-int send_type;
+Message msg;
+int receiver[MAX_CLIENT];
+int client_fds[MAX_CLIENT];
+int number_clients = 0;
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void signalHandler(int signo) {
   switch (signo) {
@@ -37,8 +38,17 @@ void signalHandler(int signo) {
     case SIGUSR1:
       logger(L_WARN, "Killing the program, coming out...\n");
       break;
+    case SIGABRT:
+      logger(L_WARN, "Detect an internal error or some seriously broken constraint, coming out...\n");
+      break;
+    case SIGSEGV:
+      logger(L_WARN, "Attempting to access memory that doesn't belong to server program, coming out...\n");
+      break;
   }
 
+  for(int i = 0; i < MAX_CLIENT; i++)
+    if(client_fds[i]) close(client_fds[i]);
+  number_clients = 0;
   close(server_fd);
   exit(SUCCESS);
 }
@@ -49,20 +59,8 @@ void handle_signal() {
   signal(SIGHUP, signalHandler);
   signal(SIGTERM, signalHandler);
   signal(SIGUSR1, signalHandler);
-}
-
-void disconnect(ClientAddr clnt_addr, PlayerTree *playertree, Request *req, Response *res) {
-  int player_id, client_fd;
-
-  if(sscanf(req->header.params, "sock=%d&player_id=%d", &client_fd, &player_id) != 2) {
-    responsify(res, 400, NULL, NULL, "Bad request. Usage: EXIT /exit sock=...&player_id=...", SEND_ME);
-    return;
-  }
-
-  Player *player_found = player_find(playertree, player_id);
-  player_found->sock = 0;
-  time_print(clnt_addr.address, "OFFLINE", "", "", 0);
-  close(client_fd);
+  signal(SIGABRT, signalHandler);
+  signal(SIGSEGV, signalHandler);
 }
 
 void connect_database(MYSQL *conn) {
@@ -74,107 +72,172 @@ void connect_database(MYSQL *conn) {
   logger(L_SUCCESS, "Connect database successfully...");
 }
 
-int route(char *path, char *route_name) { return str_start_with(path, route_name); }
+int disconnect(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+  int player_id = atoi(map_val(msg->params, "player_id"));
 
-void receiver_build(GameTree *gametree, int curr_fd) {
-  int game_id = 0, i = 0, k = 0;
-
-  // TODO: Filter to get game id and player id
-  char *game_id_str = "game_id";
-  if(strlen(req.header.params) > 0) {
-    char **params = str_split(req.header.params, '&');
-    while (params[i]) {
-      if (strstr(params[i], game_id_str) != NULL)
-        sscanf(params[i], "game_id=%d", &game_id);
-      i++;
+  Player *player_found = player_find(playertree, player_id);
+  player_found->sock = 0;
+  player_found->is_online = false;
+  time_print(clnt_addr.address, "EXIT APP", "", 0, "");
+  for (int i = 0; i < MAX_CLIENT; i++) {
+    if (client_fds[i] == clnt_addr.sock) {
+      client_fds[i] = 0;
+      number_clients--;
     }
   }
 
-  switch (send_type) {
-    case SEND_ME:
-      receiver[0] = curr_fd;
-      break;
+  // TODO: Handle player quit app while playing game
+  if(player_found->is_playing) {
+    Game *game;
+    rbtrav_t *rbtrav;
+    rbtrav = rbtnew();
+    game = rbtfirst(rbtrav, gametree);
 
-    case SEND_JOINER: {
-      Game *game_found = game_find(gametree, game_id);
-      for(i = 0; i < MAX_SPECTATOR + 2; i++) {
-        if(game_found->joiner[i])
-          receiver[k++] = game_found->joiner[i];
+    do {
+      if (game->player1_id == player_id || game->player2_id == player_id) {
+        int opponent_id = game->player1_id == player_id ? game->player2_id : game->player1_id;
+        Player *opponent = player_find(playertree, opponent_id);
+        char query[QUERY_L];
+        memset(query, '\0', QUERY_L);
+
+        game->result = player_id;
+        ++player_found->game;
+        ++player_found->achievement.loss;
+
+        ++opponent->game;
+        ++opponent->achievement.win;
+        opponent->achievement.points += 3;
+
+        // TODO: Update database
+        sprintf(
+          query,
+          "UPDATE players SET game = %d, win = %d, points = %d WHERE id = %d",
+          opponent->game, opponent->achievement.win, opponent->achievement.points, opponent_id
+        );
+        mysql_query(conn, query);
+
+        sprintf(
+          query,
+          "UPDATE players SET game = %d, loss = %d WHERE id = %d",
+          player_found->game, player_found->achievement.loss, player_id
+        );
+        mysql_query(conn, query);
+
+        sprintf(
+          query,
+          "INSERT INTO histories (player1_id, player2_id, result, num_moves) VALUES (%d, %d, -1, %d)",
+          player_id, opponent_id, game->num_move);
+        mysql_query(conn, query);
       }
-    }
-
-    case SEND_ALL:
-      break;
+    } while ((game = rbtnext(rbtrav)) != NULL);
   }
+
+  close(clnt_addr.sock);
+  return SUCCESS;
 }
 
-void route_handler(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree) {
-  char path[PATH_L], cmd[CMD_L];
-  strcpy(cmd, req.header.command);
-  strcpy(path, req.header.path);
+int route_null(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+  responsify(msg, "resource_null", NULL);
+  return FAILURE;
+}
 
-  if (strcmp(cmd, "PLAY") == 0) {
-    if(route(path, "/game/play")) game_handler(conn, gametree, playertree, &req, &res);
-    if(route(path, "/game/create")) game_create(clnt_addr, gametree, playertree, &req, &res);
-    if(route(path, "/game/join")) game_join(clnt_addr, gametree, playertree, &req, &res);
-    if(route(path, "/game/quit")) game_quit(clnt_addr, gametree, &req, &res);
-  }
+int (*route_handler(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree))
+    (MYSQL *, ClientAddr, GameTree *, PlayerTree *, Message *, int *) {
+  char cmd[CMD_L];
+  strcpy(cmd, msg.command);
 
-  else if (strcmp(cmd, "AUTH") == 0) {
-    if(route(path, "/account/login")) signin(clnt_addr, conn, playertree, &req, &res);
-    if(route(path, "/account/register")) signup(conn, playertree, &req, &res);
-//    if(route(path, "/account/logout")) signout(conn, playertree, &req, &res);
-  }
+  /* GAME */
+  if (strcmp(cmd, "GAME_FINISH") == 0)      return game_finish;
+  if (strcmp(cmd, "CARO") == 0)             return caro;
+  if (strcmp(cmd, "GAME_QUICK") == 0)       return game_quick;
+  if (strcmp(cmd, "GAME_CREATE") == 0)      return game_create;
+  if (strcmp(cmd, "GAME_CANCEL") == 0)      return game_cancel;
+  if (strcmp(cmd, "GAME_JOIN") == 0)        return game_join;
+  if (strcmp(cmd, "GAME_QUIT") == 0)        return game_quit;
 
-  else if (strcmp(cmd, "GET") == 0) {
-    if(route(path, "/rank")) rank(conn, &req, &res);
-    if(route(path, "/profile")) profile(conn, &req, &res);
-    if(route(path, "/game/view")) game_view(clnt_addr, gametree, &req, &res);
-  }
+  /* DUEL */
+  if (strcmp(cmd, "DUEL_REQUEST") == 0)      return duel_request;
+  if (strcmp(cmd, "DUEL") == 0)              return duel_handler;
 
-  else if(strcmp(cmd, "CHAT") == 0) {
-    if(route(path, "/chat")) chat(gametree, playertree, &req, &res);
-  }
+  /* DRAW REQUEST */
+  if (strcmp(cmd, "DRAW_REQUEST") == 0)      return draw_request;
+  if (strcmp(cmd, "DRAW") == 0)              return draw_handler;
 
-  else if(strcmp(cmd, "UPDATE") == 0) {
-//    if(route(path, "/account/forgotPassword")) forgot_password(conn, &req, &res);
-    if(route(path, "/account/updatePassword")) change_password(conn, playertree, &req, &res);
-  }
-  else if(strcmp(cmd, "EXIT") == 0) {
-    if(route(path, "/exit")) disconnect(clnt_addr, playertree, &req, &res);
-  }
-  else {
-    responsify(&res, 404, NULL, NULL, "Resource does not exist", SEND_ME);
-  }
+  /* FRIEND */
+  if(strcmp(cmd, "FRIEND_CHECK") == 0)      return friend_check;
+  if(strcmp(cmd, "FRIEND_LIST") == 0)       return friend_list;
+  if(strcmp(cmd, "FRIEND_ADD") == 0)        return friend_add;
+  if(strcmp(cmd, "FRIEND_ACCEPT") == 0)     return friend_accept;
+
+  /* AUTH */
+  if(strcmp(cmd, "LOGIN") == 0)             return signin;
+  if(strcmp(cmd, "LOGOUT") == 0)            return signout;
+  if(strcmp(cmd, "REGISTER") == 0)          return signup;
+  if(strcmp(cmd, "PASSWORD_UPDATE") == 0)   return change_password;
+
+  /* GET */
+  if(strcmp(cmd, "RANK") == 0)              return rank;
+  if(strcmp(cmd, "PROFILE") == 0)           return profile;
+  if(strcmp(cmd, "GAME_LIST") == 0)         return game_list;
+
+  /* CHAT */
+  if(strcmp(cmd, "CHAT") == 0)              return chat;
+
+  /* EXIT APP */
+  if(strcmp(cmd, "EXIT") == 0)              return disconnect;
+
+  return route_null;
 }
 
 void handle_client(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree) {
   int nbytes;
   while(1) {
-    cleanup(&req, &res, receiver);
-    if ((nbytes = get_req(clnt_addr.sock, &req)) <= 0) break;
-    time_print(clnt_addr.address, req.header.command, req.header.path, req.header.params, nbytes);
-    route_handler(conn, clnt_addr, gametree, playertree);
-    send_type = res.send_type;
-    receiver_build(gametree, clnt_addr.sock);
-    send_res(receiver, res);
+    if ((nbytes = get_msg(clnt_addr.sock, &msg)) <= 0) {
+      time_print(clnt_addr.address, "EXIT APP", "", 0, "");
+      for (int i = 0; i < MAX_CLIENT; i++) {
+        if (client_fds[i] == clnt_addr.sock) {
+          client_fds[i] = 0;
+          number_clients--;
+        }
+      }
+      close(clnt_addr.sock);
+      break;
+    }
+
+    // LOCK resource
+    pthread_mutex_lock(&mutex);
+
+    time_print(clnt_addr.address, msg.command, msg.__params__, nbytes, msg.content);
+
+    /*
+     * receiver[0] no change -> send me
+     * receiver[0] = -1 -> send all
+     * receiver[0] changed after route handler complete -> send to one other
+     * receiver[1] != 0 send in game for opponent and spectators
+     * */
+    receiver[0] = clnt_addr.sock;
+
+    route_handler(conn, clnt_addr, gametree, playertree)(conn, clnt_addr, gametree, playertree, &msg, receiver);
+    send_msg(receiver[0] == -1 ? client_fds : receiver, msg);
+    cleanup(&msg, receiver);
+
+    // UNLOCK resource
+    pthread_mutex_unlock(&mutex);
   }
 }
 
-// Structure of arguments to pass to client thread
 typedef struct ThreadArgs {
-  ClientAddr client_addr; // Socket descriptor for client
+  ClientAddr client_addr;
   MYSQL *conn;
   GameTree *gametree;
   PlayerTree *playertree;
 } ThreadArgs;
 
-// Each thread executes this function
 void *ThreadMain(void *threadArgs) {
   // Guarantees that thread resources are deallocated upon return
   pthread_detach(pthread_self());
 
-  // Extract socket file descriptor argument
+  // Extract argument from main thread
   ClientAddr clnt_addr = ((ThreadArgs *)threadArgs)->client_addr;
   MYSQL *conn = ((ThreadArgs *)threadArgs)->conn;
   GameTree *gametree = ((ThreadArgs *)threadArgs)->gametree;
@@ -189,12 +252,23 @@ void *ThreadMain(void *threadArgs) {
 void server_listen(MYSQL *conn, GameTree *gametree, PlayerTree *playertree) {
   for(;;) {
     ClientAddr client_addr = accept_conn(server_fd);
-    time_print(client_addr.address, "ONLINE", "", "", 0);
 
-    // Create separate memory for client argument
+    // TODO: Reject client if numbers of client greater than 20
+    if(number_clients == MAX_CLIENT) {
+      pthread_mutex_lock(&mutex);
+      receiver[0] = client_addr.sock;
+      server_error(&msg);
+      send_msg(receiver, msg);
+      cleanup(&msg, receiver);
+      pthread_mutex_unlock(&mutex);
+      continue;
+    }
+
+    time_print(client_addr.address, "ONLINE", "", 0, "");
+    client_fds[number_clients++] = client_addr.sock;
+
     ThreadArgs *threadArgs = (ThreadArgs *) malloc(sizeof (ThreadArgs));
     if(threadArgs == NULL) {
-      logger(L_ERROR, "malloc() failed");
       close(server_fd);
       exit(FAILURE);
     }
@@ -210,7 +284,9 @@ void server_listen(MYSQL *conn, GameTree *gametree, PlayerTree *playertree) {
 
     /* Reduce CPU usage */
     sleep(1);
+
     if(rtnVal != 0) {
+      server_error(&msg);
       close(server_fd);
       exit(FAILURE);
     }
@@ -218,6 +294,11 @@ void server_listen(MYSQL *conn, GameTree *gametree, PlayerTree *playertree) {
 }
 
 int main(int argc, char *argv[]) {
+  if(argc != 2) {
+    logger(L_INFO, "Usage: ./server <port>");
+    return FAILURE;
+  }
+
   srand(time(NULL));
   handle_signal();
 
@@ -234,29 +315,25 @@ int main(int argc, char *argv[]) {
   gametree = game_new();
   Game g = {
     .id = 1,
-    .views = 9,
     .num_move = 48,
-    .result = 0,
-    .turn = 'O',
-    .player1_id = 1,
-    .player2_id = 2,
-    .board = {
-      {'_', 'O', 'X'},
-      {'X', '_', '_'},
-      {'O', 'X', '_'}
-    } ,
-    .col = 1,
-    .row = 0,
+    .result = -1,
+    .player1_id = 2,
+    .player2_id = 0,
+    .password = ""
   };
-  memset(g.joiner, 0, sizeof g.joiner);
 
   game_add(gametree, g);
   playertree = player_build(conn);
 
   server_fd = server_init(argv[1]);
+  cleanup(&msg, receiver);
+
   server_listen(conn, gametree, playertree);
 
   game_drop(gametree);
+  player_drop(playertree);
+  if(msg.params) map_drop(msg.params);
   mysql_close(conn);
+  close(server_fd);
   return SUCCESS;
 }

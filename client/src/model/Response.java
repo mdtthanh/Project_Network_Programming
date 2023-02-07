@@ -4,6 +4,7 @@
  */
 package model;
 
+import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -12,37 +13,39 @@ import java.util.regex.Pattern;
  * @author zenos
  */
 public class Response {
-  private int code;
   private String data;
   private String state;
-  private String message;
+  private int dataLength;
 
   public Response(String response) {
-    Pattern pattern = Pattern.compile(
-      "code: (\\d+),state: ([a-zA-Z0-9_]+),data: ([a-zA-Z0-9&=/\\.]+),message: (.+)"
-    );
+    Pattern pattern = Pattern.compile("RESPONSE#(\\d+)#0#(.+)?");
     Matcher m = pattern.matcher(response);
     m.find();
-    this.code = Integer.parseInt(m.group(1)); // code: 200
-    this.state = m.group(2); // state: wrong-user
-    this.data = m.group(3);  // data: username=tuan12&password=absa12xsh
-    this.message = m.group(4); // message: Successfully\n
-  }
-
-  public int getCode() {
-    return code;
+    this.dataLength = Integer.parseInt(m.group(1));
+    String content = m.group(2);
+    String[] splitter = content.split(",");
+    this.state = splitter[0].substring(splitter[0].indexOf("=") + 1);
+    this.data = content.contains(",") ? content.substring(content.indexOf(",") + 1) : "";
   }
 
   public String getData() {
     return data;
   }
-
+  
   public String getState() {
-    return state;
+    return this.state;
   }
-
-  public String getMessage() {
-    return message;
+  
+  public int getDataLength() {
+    return dataLength;
+  }
+  
+  public String[] parseData(String format) {
+    return Pattern.compile(format)
+      .matcher(this.getData())
+      .results()
+      .map(MatchResult::group)
+      .toArray(String[]::new);
   }
 
 }
