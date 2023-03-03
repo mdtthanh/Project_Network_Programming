@@ -59,7 +59,7 @@ char *encrypt(char *password) {
   return converter;
 }
 
-int signup(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int signup(MYSQL *conn, ClientAddr clnt_addr, PlayerTree *playertree, Message *msg) {
   char username[USERNAME_L], password[PASSWORD_L], avatar[AVATAR_L], dataStr[DATA_L];
   strcpy(username, map_val(msg->params, "username"));
   strcpy(password, map_val(msg->params, "password"));
@@ -119,10 +119,10 @@ int signup(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *pl
   );
 
   responsify(msg, "register_success", dataStr);
-  return SUCCESS;
+  return UPDATE;
 }
 
-int signin(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int signin(MYSQL *conn, ClientAddr clnt_addr, PlayerTree *playertree, Message *msg) {
   char username[USERNAME_L], password[PASSWORD_L];
   strcpy(username, map_val(msg->params, "username"));
   strcpy(password, map_val(msg->params, "password"));
@@ -184,10 +184,10 @@ int signin(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *pl
 
   mysql_free_result(qres);
   responsify(msg, "login_success", dataStr);
-  return SUCCESS;
+  return UPDATE;
 }
 
-int signout(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int signout(PlayerTree *playertree, Message *msg) {
   int player_id = atoi(map_val(msg->params, "player_id"));
 
   // TODO: unset
@@ -200,7 +200,7 @@ int signout(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *p
   return SUCCESS;
 }
 
-int change_password(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int change_password(MYSQL *conn, PlayerTree *playertree, Message *msg) {
   int player_id = atoi(map_val(msg->params, "player_id"));
   char old_password[PASSWORD_L], new_password[PASSWORD_L];
   strcpy(old_password, map_val(msg->params, "old_password"));

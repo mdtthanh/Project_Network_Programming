@@ -13,6 +13,8 @@ import java.net.Socket;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.Vector;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -28,20 +30,20 @@ public class SocketHandle implements Runnable {
   private BufferedWriter os;
   private BufferedReader is;
   private Socket socketOfClient;
-  private int ID_Server;
+//  private ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);   
   
   public List<User> getListUser(String[] message){
     Pattern p = Pattern.compile("id=(\\d+),username=([a-zA-Z0-9]+),avatar=([a-zA-Z0-9/\\.]+),is_online=([a-z]+),is_playing=([a-z]+)");
     Matcher m;
     List<User> friend = new ArrayList<>();
-    for(int i = 0; i < message.length; i++){
-      m = p.matcher(message[i]);
+    for (String message1 : message) {
+      m = p.matcher(message1);
       if(m.find())
         friend.add(new User(
-          Integer.parseInt(m.group(1)), 
-          m.group(2), 
-          m.group(3), 
-          Boolean.parseBoolean(m.group(4)), 
+          Integer.parseInt(m.group(1)),
+          m.group(2),
+          m.group(3),
+          Boolean.parseBoolean(m.group(4)),
           Boolean.parseBoolean(m.group(5))
         ));
     }
@@ -53,17 +55,17 @@ public class SocketHandle implements Runnable {
     List<User> player = new ArrayList<>();
     Pattern pattern = Pattern.compile("id=(\\d+),username=([a-zA-Z0-9]+),avatar=([a-zA-Z0-9/\\.]+),win=(\\d+),loss=(\\d+),points=(-?\\d+)");
     Matcher m;
-    for(int i = 0; i < splitter.length; i++){
-      m = pattern.matcher(splitter[i]);
+    for (String splitter1 : splitter) {
+      m = pattern.matcher(splitter1);
       if(m.find()) {
         player.add(new User(
-            Integer.parseInt(m.group(1)), 
-            m.group(2), 
-            m.group(3), 
-            Integer.parseInt(m.group(4)), 
-            Integer.parseInt(m.group(5)), 
-            Integer.parseInt(m.group(6))
-          )
+          Integer.parseInt(m.group(1)),
+          m.group(2),
+          m.group(3),
+          Integer.parseInt(m.group(4)),
+          Integer.parseInt(m.group(5)), 
+          Integer.parseInt(m.group(6))
+        )
         );
       }
     }
@@ -98,7 +100,10 @@ public class SocketHandle implements Runnable {
   public void run() {
     try {
       // Gửi yêu cầu kết nối tới Server đang lắng nghe
+//      socketOfClient = new Socket("0.tcp.ap.ngrok.io", 10874);
       socketOfClient = new Socket("127.0.0.1", 12121);
+      socketOfClient.setKeepAlive(true);
+      Client.isKeepAlive = true;
       System.out.println("Kết nối thành công!");
       
       // Tạo luồng đầu ra tại client (Gửi dữ liệu tới server)
@@ -107,22 +112,28 @@ public class SocketHandle implements Runnable {
       is = new BufferedReader(new InputStreamReader(socketOfClient.getInputStream()));
       String message;
       Response res;
+     
       
       while (true) {
         // Nhận response từ server
         message = is.readLine();
         if (message == null) {
+          System.out.println("Server crash...");
+          Client.isKeepAlive = false;
+          Client.serverCrash();
           break;
         }
         System.out.println("Server response: " + message);
         res = new Response(message);
-        
-//        String[] messageSplit = message.split(",");
-//        if(messageSplit[0].equals("server-send-id")){
-//          ID_Server = Integer.parseInt(messageSplit[1]);
-//        }
 
+        if(res.getState().equals("keep_alive")) {
+          write("KEEP_ALIVE#0#0#");
+        }
         
+        if(res.getState().equals("server_ok")) {
+          System.out.println("SERVER 200/OK");
+        }
+
         /* ---------------------------------------------------------------------------------- */
         /*                                AUTHENTICATION                                      */
         /* ---------------------------------------------------------------------------------- */
@@ -133,8 +144,20 @@ public class SocketHandle implements Runnable {
           Client.closeAllViews();
           User user = getUserFromString(res.getData());
           Client.user = user;
+
+          // Gửi request keep-alive cho server để kiểm tra kết nối định kì mỗi 30s
+          new Timer().scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+              try {
+                write("KEEP_ALIVE#0#0#");
+              } catch (IOException ex) {
+                Client.isKeepAlive = false;
+              }
+            }
+          }, 0, 60000);
           Client.openView(Client.View.HOMEPAGE);
-        }
+        }     
         
         // Thông tin tài khoản sai
         if(res.getState().equals("account_incorrect")){
@@ -178,14 +201,22 @@ public class SocketHandle implements Runnable {
  
         // Xử lý chat global
         if(res.getState().equals("chat_global")){
-          if(Client.homePageFrm != null){
-            Client.homePageFrm.addMessage(res.getData());
-          }
+          Client.homePageFrm.addMessage(res.getData());
         }
         
         // Xử lý chat trong game
         if(res.getState().equals("chat_local")){
           Client.gameClientFrm.addMessage(res.getData());
+        }
+        
+        // Xử lý chat không hợp lệ 
+        if(res.getState().equals("chat_fail")){
+          if(Client.homePageFrm != null){
+            Client.homePageFrm.addMessage(res.getData());
+          }
+          else {
+            Client.gameClientFrm.addMessage(res.getData());
+          }
         }
         
         /* ---------------------------------------------------------------------------------- */
@@ -228,6 +259,11 @@ public class SocketHandle implements Runnable {
           Client.closeAllViews();
           Client.openView(Client.View.HOMEPAGE);
           JOptionPane.showMessageDialog(Client.homePageFrm, "Phòng chơi đã đủ 2 người chơi");
+        }
+        
+        // Xử lý đã vào 1 phòng thì không thể vào các phòng khác
+        if(res.getState().equals("game_playing")){
+          JOptionPane.showMessageDialog(Client.gameClientFrm, "Bạn đã vào phòng");
         }
         
         // Xử lý không tìm thấy phòng trong chức năng vào phòng
@@ -294,6 +330,7 @@ public class SocketHandle implements Runnable {
           }
           Client.closeAllViews();
           System.out.println("Đã vào phòng: " + roomID);
+          Client.user.setIsPlaying(true);
           
           Client.openView(Client.View.GAMECLIENT, competitor, roomID, isStart, competitorIP);
           Client.gameClientFrm.newgame();
@@ -304,7 +341,8 @@ public class SocketHandle implements Runnable {
           Client.gameClientFrm.stopTimer();
           Client.closeAllViews();
           Client.openView(Client.View.GAMENOTICE, "Đối thủ đã thoát khỏi phòng", "Đang trở về trang chủ");
-          Thread.sleep(3000);       
+          Client.user.updateAchieve("win");
+          Thread.sleep(2000);       
           Client.closeAllViews();
           Client.openView(Client.View.HOMEPAGE);
         }
@@ -341,7 +379,7 @@ public class SocketHandle implements Runnable {
           m.find();
           int ID = Integer.parseInt(m.group(1));
           String username = m.group(2);
-          Client.openView(Client.View.FRIENDREQUEST, ID, username);
+          Client.openView(Client.View.FRIENDREQUEST, "friend", ID, username);
         }
         
         // Xử lý xem rank
@@ -360,22 +398,9 @@ public class SocketHandle implements Runnable {
           Pattern p = Pattern.compile("player_id=(\\d+),username=([a-zA-Z0-9]+)");
           Matcher m = p.matcher(res.getData());
           m.find();
-          int ret = JOptionPane.showConfirmDialog(
-            Client.getVisibleJFrame(), 
-            "Bạn nhận được lời thách đấu của " + m.group(2) + " (ID=" + m.group(1) + ")", 
-            "Xác nhận thách đấu", 
-            JOptionPane.YES_NO_OPTION
-          );
-          if(ret == JOptionPane.YES_OPTION){
-            Client.socketHandle.write(
-              Client.socketHandle.requestify("DUEL", 0, "player_id=" + Client.user.getID() + "&friend_id=" + m.group(1) + "&agree=1", "")
-            );
-          }
-          else{
-            Client.socketHandle.write(
-              Client.socketHandle.requestify("DUEL", 0, "player_id=" + Client.user.getID() + "&friend_id=" + m.group(1) + "&agree=0", "")
-            );
-          }
+          int ID = Integer.parseInt(m.group(1));
+          String username = m.group(2);
+          Client.openView(Client.View.FRIENDREQUEST, "duel", ID, username);
         }
         
         // Xử lý không đồng ý thách đấu
@@ -447,7 +472,7 @@ public class SocketHandle implements Runnable {
 
         if(res.getState().equals("new_game")){
           System.out.println("New game");
-          Thread.sleep(4000);
+          Thread.sleep(2000);
           Client.gameClientFrm.updateNumberOfGame();
           Client.closeView(Client.View.GAMENOTICE);
           Client.gameClientFrm.newgame();
@@ -458,7 +483,7 @@ public class SocketHandle implements Runnable {
           Client.closeView(Client.View.GAMENOTICE);
           Client.openView(Client.View.GAMENOTICE, "Ván chơi hòa", "Ván chơi mới dang được thiết lập");
           Client.gameClientFrm.displayDrawGame();
-          Thread.sleep(4000);
+          Thread.sleep(2000);
           Client.gameClientFrm.updateNumberOfGame();
           Client.closeView(Client.View.GAMENOTICE);
           Client.gameClientFrm.newgame();
@@ -473,8 +498,9 @@ public class SocketHandle implements Runnable {
           Client.gameClientFrm.increaseWinMatchToUser();
 
           Client.openView(Client.View.GAMENOTICE, "Bạn đã thắng do đối thủ quá thời gian", "Đang thiết lập ván chơi mới");
-          Thread.sleep(4000);
+          Thread.sleep(2000);
           Client.closeView(Client.View.GAMENOTICE);
+          Client.user.updateAchieve("win");
           Client.socketHandle.write(
             Client.socketHandle.requestify(
               "GAME_FINISH", 0, 
@@ -482,6 +508,21 @@ public class SocketHandle implements Runnable {
               ""
             )
           );
+        }
+        
+        
+        /* ---------------------------------------------------------------------------------- */
+        /*                                        OTHER                                       */
+        /* ---------------------------------------------------------------------------------- */
+        
+                
+        if(res.getState().equals("updating")) {
+          Client.openView(Client.View.GAMENOTICE, "Đang cập nhật dữ liệu mới nhất", "Vui lòng chờ");
+        }
+        
+        if(res.getState().equals("updated")) {
+          Thread.sleep(1000);
+          Client.closeView(Client.View.GAMENOTICE);
         }
       }
       

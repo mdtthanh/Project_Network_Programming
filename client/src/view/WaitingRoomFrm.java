@@ -8,11 +8,8 @@ package view;
 import controller.Client;
 import java.awt.Color;
 import java.io.IOException;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 import javax.swing.ImageIcon;
 import javax.swing.JOptionPane;
-import static javax.swing.WindowConstants.EXIT_ON_CLOSE;
 
 /**
  *
@@ -30,7 +27,7 @@ public class WaitingRoomFrm extends javax.swing.JFrame {
     isOpenning = false;
     this.setIconImage(new ImageIcon("assets/image/caroicon.png").getImage());
     this.setResizable(false);
-    this.setDefaultCloseOperation(EXIT_ON_CLOSE);
+    this.setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
     this.setLocationRelativeTo(null);
     jLabel3.setIcon(new ImageIcon("assets/icon/loading2.gif"));
     jButton2.setIcon(new ImageIcon("assets/icon/door_exit.png"));
@@ -68,8 +65,13 @@ public class WaitingRoomFrm extends javax.swing.JFrame {
     jButton2 = new javax.swing.JButton();
 
     setDefaultCloseOperation(javax.swing.WindowConstants.EXIT_ON_CLOSE);
+    addWindowListener(new java.awt.event.WindowAdapter() {
+      public void windowClosing(java.awt.event.WindowEvent evt) {
+        formWindowClosing(evt);
+      }
+    });
 
-    jPanel1.setBackground(new java.awt.Color(102, 102, 102));
+    jPanel1.setBackground(new java.awt.Color(81, 81, 104));
 
     jLabel1.setFont(new java.awt.Font("Tahoma", 1, 18)); // NOI18N
     jLabel1.setForeground(new java.awt.Color(255, 255, 255));
@@ -101,11 +103,14 @@ public class WaitingRoomFrm extends javax.swing.JFrame {
     );
 
     jLabel2.setFont(new java.awt.Font("Tahoma", 2, 14)); // NOI18N
+    jLabel2.setForeground(new java.awt.Color(81, 81, 104));
     jLabel2.setHorizontalAlignment(javax.swing.SwingConstants.CENTER);
     jLabel2.setText("Đang chờ người chơi khác vào phòng");
 
+    jLabel3.setForeground(new java.awt.Color(81, 81, 104));
     jLabel3.setText("jLabel3");
 
+    jButton2.setBorder(javax.swing.BorderFactory.createLineBorder(new java.awt.Color(81, 81, 104)));
     jButton2.addActionListener(new java.awt.event.ActionListener() {
       public void actionPerformed(java.awt.event.ActionEvent evt) {
         jButton2ActionPerformed(evt);
@@ -154,6 +159,11 @@ public class WaitingRoomFrm extends javax.swing.JFrame {
       JOptionPane.showMessageDialog(rootPane, ex.getMessage());
     }
     }//GEN-LAST:event_jButton2ActionPerformed
+
+  private void formWindowClosing(java.awt.event.WindowEvent evt) {//GEN-FIRST:event_formWindowClosing
+    Client.closeAllViews();
+    Client.openView(Client.View.HOMEPAGE);
+  }//GEN-LAST:event_formWindowClosing
 
 
   // Variables declaration - do not modify//GEN-BEGIN:variables

@@ -5,7 +5,6 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <ctype.h>
 
 #include "map.h"
 #include "config.h"
@@ -19,7 +18,8 @@ void cleanup(Message *msg, int *receiver) {
   msg->content_l = 0;
   if(msg->params) map_drop(msg->params);
   msg->params = map_new();
-  memset(receiver, 0, MAX_CLIENT);
+  for(int i = 0; i < MAX_CLIENT; i++)
+    receiver[i] = 0;
 }
 
 void parse_params(Message *msg, char *params) {
@@ -103,6 +103,16 @@ int server_init(char *service) {
     server_fd = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
     if (server_fd < 0) continue;
 
+    /* TODO: configure socket
+     NOTE:
+     * The purpose of SO_REUSEADDR/SO_REUSEPORT is to allow to reuse the port even
+       if the process crash or been killed.
+    */
+    int flag = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
+    flag = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEPORT, &flag, sizeof(flag));
+
     if ((bind(server_fd, addr->ai_addr, addr->ai_addrlen) == 0) && (listen(server_fd, BACKLOG) == 0)) {
       struct sockaddr_storage localAddr;
       socklen_t addrSize = sizeof(localAddr);
@@ -141,16 +151,16 @@ int get_msg(int client_fd, Message *msg) {
   if(numBytesRcvd <= 0 || strlen(msg_str) <= 0) {
     return 0;
   }
-  logger(L_INFO, msg_str);
   if(!msg_parse(msg, msg_str)) return 0;
   return numBytesRcvd;
 }
 
 int send_msg(int *receiver, Message msg) {
   char msg_str[MSG_L];
+  ssize_t numBytesSent;
   sprintf(msg_str, "%s#%d#%s#%s\n", msg.command, msg.content_l, msg.__params__, msg.content);
   size_t msg_l = strlen(msg_str);
   for(int i = 0; i < MAX_CLIENT; i++)
-    if(receiver[i] > 0) send(receiver[i], msg_str, msg_l, 0);
-  return SUCCESS;
+    if(receiver[i] > 0) numBytesSent = send(receiver[i], msg_str, msg_l, 0);
+  return numBytesSent;
 }

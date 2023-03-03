@@ -6,6 +6,8 @@
 package controller;
 
 
+import java.util.Timer;
+import java.util.TimerTask;
 import javax.swing.JFrame;
 import model.User;
 import view.CompetitorInfoFrm;
@@ -69,8 +71,23 @@ public class Client {
   public static RoomNameFrm roomNameFrm;
   //Thiết lập socket
   public static SocketHandle socketHandle;
+  public static boolean isKeepAlive;
 
   public Client() {
+  }
+  
+  public static void serverCrash() {
+    if(getVisibleJFrame() != homePageFrm) {
+      Client.closeAllViews();
+      Client.openView(Client.View.HOMEPAGE);
+    }
+    Client.openView(Client.View.GAMENOTICE, "Server crash", "You can play with my AI");
+    new Timer().schedule(new TimerTask() {
+      @Override
+      public void run() {
+        Client.closeView(Client.View.GAMENOTICE);
+      }
+    }, 1500);
   }
 
   public static JFrame getVisibleJFrame(){
@@ -149,15 +166,15 @@ public class Client {
     }
   }
   
-  public static void openView(View viewName, int arg1, String arg2){
+  public static void openView(View viewName, String arg1, int arg2, String arg3){
     if(viewName != null){
       switch(viewName){
         case JOINROOMPASSWORD:
-          joinRoomPasswordFrm = new JoinRoomPasswordFrm(arg1, arg2);
+          joinRoomPasswordFrm = new JoinRoomPasswordFrm(arg2, arg3);
           joinRoomPasswordFrm.setVisible(true);
           break;
         case FRIENDREQUEST:
-          friendRequestFrm = new FriendRequestFrm(arg1, arg2);
+          friendRequestFrm = new FriendRequestFrm(arg1, arg2, arg3);
           friendRequestFrm.setVisible(true);
       }
     }

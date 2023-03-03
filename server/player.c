@@ -5,7 +5,6 @@
 #include <ctype.h>
 
 #include "player.h"
-#include "game.h"
 #include "http.h"
 #include "config.h"
 #include "rbtree.h"
@@ -94,8 +93,8 @@ PlayerTree *player_build(MYSQL *conn) {
     strcpy(player.avatar, row_player[3]);
     player.game = atoi(row_player[4]);
     player.achievement.win = atoi(row_player[5]);
-    player.achievement.loss = atoi(row_player[6]);
-    player.achievement.draw = atoi(row_player[7]);
+    player.achievement.draw = atoi(row_player[6]);
+    player.achievement.loss = atoi(row_player[7]);
     player.achievement.streak = atoi(row_player[8]);
     player.achievement.points = atoi(row_player[9]);
     player.sock = 0;
@@ -149,6 +148,24 @@ char *player_username(PlayerTree *playertree, int player_id) {
   return player_found->username;
 }
 
+int find_player_bind_socket(PlayerTree *playertree, int fd) {
+  int id = 0;
+  Player *player;
+
+  rbtrav_t *rbtrav;
+  rbtrav = rbtnew();
+  player = rbtfirst(rbtrav, playertree);
+
+  do {
+    if(player->sock == fd) {
+      id = player->id;
+      break;
+    }
+  } while ((player = rbtnext(rbtrav)) != NULL);
+
+  return id;
+}
+
 int my_rank(MYSQL *conn, int player_id, char *dataStr) {
   // TODO: QUERY find rank of specified player id
   char query[QUERY_L] = ""
@@ -185,7 +202,7 @@ int my_rank(MYSQL *conn, int player_id, char *dataStr) {
   return -1;
 }
 
-int rank(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int rank(MYSQL *conn, Message *msg) {
   int player_id = atoi(map_val(msg->params, "player_id"));
 
   // TODO: QUERY follow points from database
@@ -234,7 +251,7 @@ int rank(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *play
   return SUCCESS;
 }
 
-int profile(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int profile(MYSQL *conn, Message *msg) {
   char key[USERNAME_L];
   char dataStr[DATA_L], tmp[DATA_L];
   memset(dataStr, '\0', DATA_L);
@@ -291,7 +308,7 @@ int profile(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *p
   return SUCCESS;
 }
 
-int friend_check(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int friend_check(MYSQL *conn, Message *msg) {
   int player_id = atoi(map_val(msg->params, "player_id"));
   int friend_id = atoi(map_val(msg->params, "friend_id"));
 
@@ -317,7 +334,7 @@ int friend_check(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTr
   return SUCCESS;
 }
 
-int friend_list(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int friend_list(MYSQL *conn, PlayerTree *playertree, Message *msg) {
   int player_id = atoi(map_val(msg->params, "player_id"));
 
   // TODO: QUERY check friend in database
@@ -372,7 +389,7 @@ int friend_list(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTre
   return SUCCESS;
 }
 
-int friend_accept(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int friend_accept(MYSQL *conn, PlayerTree *playertree, Message *msg) {
   int player_id = atoi(map_val(msg->params, "player_id"));
   int friend_id = atoi(map_val(msg->params, "friend_id"));
 
@@ -398,7 +415,7 @@ int friend_accept(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerT
   return SUCCESS;
 }
 
-int friend_add(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int friend_add(MYSQL *conn, PlayerTree *playertree, Message *msg, int *receiver) {
   int player_id = atoi(map_val(msg->params, "player_id"));
   int friend_id = atoi(map_val(msg->params, "friend_id"));
 

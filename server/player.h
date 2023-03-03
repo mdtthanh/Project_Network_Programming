@@ -38,14 +38,15 @@ int player_add(PlayerTree *, Player);
 Player *player_find(PlayerTree *, int);
 int player_fd(PlayerTree *, int);
 char *player_username(PlayerTree *, int);
+int find_player_bind_socket(PlayerTree *, int);
 
 int my_rank(MYSQL *, int, char *);
-int rank(MYSQL *, ClientAddr, GameTree *, PlayerTree *, Message *, int *);
-int profile(MYSQL *, ClientAddr, GameTree *, PlayerTree *, Message *, int *);
+int rank(MYSQL *, Message *);
+int profile(MYSQL *, Message *);
 
-int friend_check(MYSQL *, ClientAddr, GameTree *, PlayerTree *, Message *, int *);
-int friend_list(MYSQL *, ClientAddr, GameTree *, PlayerTree *, Message *, int *);
-int friend_add(MYSQL *, ClientAddr, GameTree *, PlayerTree *, Message *, int *);
-int friend_accept(MYSQL *, ClientAddr, GameTree *, PlayerTree *, Message *, int *);
+int friend_check(MYSQL *, Message *);
+int friend_list(MYSQL *, PlayerTree *, Message *);
+int friend_add(MYSQL *, PlayerTree *, Message *, int *);
+int friend_accept(MYSQL *, PlayerTree *, Message *);
 
 #endif

@@ -85,7 +85,7 @@ Game *game_find(GameTree *gametree, int id) {
   return !game ? NULL : game;
 }
 
-int game_finish(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int game_finish(MYSQL *conn, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
   int game_id = atoi(map_val(msg->params, "game_id"));
   int player_id = atoi(map_val(msg->params, "player_id"));
   int opponent_id = atoi(map_val(msg->params, "opponent_id"));
@@ -169,7 +169,7 @@ int game_finish(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTre
   return SUCCESS;
 }
 
-int caro(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int caro(GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
   int game_id = atoi(map_val(msg->params, "game_id"));
   int opponent_id = atoi(map_val(msg->params, "opponent_id"));
   int x = atoi(map_val(msg->params, "x"));
@@ -187,7 +187,7 @@ int caro(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *play
   return SUCCESS;
 }
 
-int game_create(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int game_create(GameTree *gametree, Message *msg) {
   int player_id = atoi(map_val(msg->params, "player_id"));
   char game_pwd[PASSWORD_L];
   strcpy(game_pwd, !map_val(msg->params, "password") ? "" : map_val(msg->params, "password"));
@@ -218,20 +218,27 @@ int game_create(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTre
   return SUCCESS;
 }
 
-int game_cancel(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int game_cancel(GameTree *gametree, Message *msg) {
   int game_id = atoi(map_val(msg->params, "game_id"));
   game_delete(gametree, game_id);
   responsify(msg, "game_cancel", NULL);
   return SUCCESS;
 }
 
-int game_join(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int game_join(MYSQL *conn, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
   int player_id = atoi(map_val(msg->params, "player_id"));
   int game_id = atoi(map_val(msg->params, "game_id"));
   char dataStr[DATA_L], game_pwd[PASSWORD_L];
   memset(dataStr, '\0', DATA_L);
   char *temp_pwd = map_val(msg->params, "password");
   strcpy(game_pwd, temp_pwd ? temp_pwd : "");
+
+  // TODO: Check if player already played
+  Player *player_found = player_find(playertree, player_id);
+  if(player_found->is_playing) {
+    responsify(msg, "game_playing", NULL);
+    return FAILURE;
+  }
 
   // TODO: Find game room for player
   Game *game_found = game_find(gametree, game_id);
@@ -255,7 +262,6 @@ int game_join(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree 
   if(game_found->player1_id) game_found->player2_id = player_id;
   else game_found->player1_id = player_id;
 
-  Player *player_found = player_find(playertree, player_id);
   player_found->is_playing = true;
 
   Player *opponent = player_find(playertree, (game_found->player1_id == player_id ? game_found->player2_id : game_found->player1_id));
@@ -282,16 +288,16 @@ int game_join(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree 
   return SUCCESS;
 }
 
-int game_quit(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int game_quit(MYSQL *conn, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
   int player_id = atoi(map_val(msg->params, "player_id"));
   int game_id = atoi(map_val(msg->params, "game_id"));
-  int opponent_id = atoi(map_val(msg->params, "opponent_id"));
+  int winner_id = atoi(map_val(msg->params, "opponent_id"));
 
   // TODO: Find game room for player
   Game *game = game_find(gametree, game_id);
 
   Player *quit_player = player_find(playertree, player_id);
-  Player *winner = player_find(playertree, opponent_id);
+  Player *winner = player_find(playertree, winner_id);
   quit_player->is_playing = false;
   winner->is_playing = false;
 
@@ -300,24 +306,24 @@ int game_quit(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree 
     char query[QUERY_L];
     memset(query, '\0', QUERY_L);
     game->result = winner->id;
-    ++quit_player->game;
-    ++quit_player->achievement.loss;
+    quit_player->game += 1;
+    quit_player->achievement.loss += 1;
 
-    ++winner->game;
-    ++winner->achievement.win;
+    winner->game += 1;
+    winner->achievement.win += 1;
     winner->achievement.points += 3;
-
-    sprintf(
-      query,
-      "UPDATE players SET game = %d, win = %d, points = %d WHERE id = %d",
-      winner->game, winner->achievement.win, winner->achievement.points, opponent_id
-    );
-    mysql_query(conn, query);
 
     sprintf(
       query,
       "UPDATE players SET game = %d, loss = %d WHERE id = %d",
       quit_player->game, quit_player->achievement.loss, player_id
+    );
+    mysql_query(conn, query);
+
+    sprintf(
+      query,
+      "UPDATE players SET game = %d, win = %d, points = %d WHERE id = %d",
+      winner->game, winner->achievement.win, winner->achievement.points, winner_id
     );
     mysql_query(conn, query);
 
@@ -335,7 +341,7 @@ int game_quit(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree 
   return SUCCESS;
 }
 
-int game_list(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int game_list(GameTree *gametree, Message *msg) {
   char dataStr[DATA_L];
   memset(dataStr, '\0', DATA_L);
 
@@ -364,7 +370,7 @@ int game_list(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree 
   return SUCCESS;
 }
 
-int game_quick(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int game_quick(MYSQL *conn, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
   int player_id = atoi(map_val(msg->params, "player_id"));
   char dataStr[DATA_L];
   memset(dataStr, '\0', DATA_L);
@@ -415,7 +421,7 @@ int game_quick(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree
   return FAILURE;
 }
 
-int duel_request(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int duel_request(PlayerTree *playertree, Message *msg, int *receiver) {
   int player_id = atoi(map_val(msg->params, "player_id"));
   int friend_id = atoi(map_val(msg->params, "friend_id"));
   char dataStr[DATA_L];
@@ -429,7 +435,7 @@ int duel_request(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTr
   return SUCCESS;
 }
 
-int duel_handler(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int duel_handler(MYSQL *conn, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
   int player_id = atoi(map_val(msg->params, "player_id"));
   int friend_id = atoi(map_val(msg->params, "friend_id"));
   int agree = atoi(map_val(msg->params, "agree"));
@@ -486,14 +492,14 @@ int duel_handler(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTr
   return SUCCESS;
 }
 
-int draw_request(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int draw_request(PlayerTree *playertree, Message *msg, int *receiver) {
   int opponent_id = atoi(map_val(msg->params, "opponent_id"));
   receiver[0] = player_fd(playertree, opponent_id);
   responsify(msg, "draw_request", NULL);
   return SUCCESS;
 }
 
-int draw_handler(MYSQL *conn, ClientAddr clnt_addr, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
+int draw_handler(MYSQL *conn, GameTree *gametree, PlayerTree *playertree, Message *msg, int *receiver) {
   int game_id = atoi(map_val(msg->params, "game_id"));
   int player_id = atoi(map_val(msg->params, "player_id"));
   int opponent_id = atoi(map_val(msg->params, "opponent_id"));
