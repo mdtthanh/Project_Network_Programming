@@ -315,7 +315,7 @@ public class GameClientFrm extends javax.swing.JFrame{
 
     jLabel2.setFont(new java.awt.Font("Liberation Sans", 1, 15)); // NOI18N
     jLabel2.setForeground(new java.awt.Color(81, 81, 104));
-    jLabel2.setText("Win");
+    jLabel2.setText("Số ván thắng");
 
     yourTurnJLabel3.setForeground(new java.awt.Color(255, 0, 0));
     yourTurnJLabel3.setText("Đến lượt bạn");
@@ -326,11 +326,11 @@ public class GameClientFrm extends javax.swing.JFrame{
 
     jLabel4.setFont(new java.awt.Font("Liberation Sans", 1, 15)); // NOI18N
     jLabel4.setForeground(new java.awt.Color(81, 81, 104));
-    jLabel4.setText("Game");
+    jLabel4.setText("Số ván chơi");
 
     jLabel9.setFont(new java.awt.Font("Liberation Sans", 1, 15)); // NOI18N
     jLabel9.setForeground(new java.awt.Color(81, 81, 104));
-    jLabel9.setText("Win");
+    jLabel9.setText("Số ván thắng");
 
     jLabel10.setFont(new java.awt.Font("Liberation Sans", 1, 15)); // NOI18N
     jLabel10.setForeground(new java.awt.Color(81, 81, 104));
@@ -338,7 +338,7 @@ public class GameClientFrm extends javax.swing.JFrame{
 
     jLabel11.setFont(new java.awt.Font("Liberation Sans", 1, 15)); // NOI18N
     jLabel11.setForeground(new java.awt.Color(81, 81, 104));
-    jLabel11.setText("Game");
+    jLabel11.setText("Số ván chơi");
 
     jTextArea1.setColumns(20);
     jTextArea1.setFont(new java.awt.Font("Tahoma", 0, 14)); // NOI18N
